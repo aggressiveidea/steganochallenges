@@ -3,45 +3,123 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Stegano Challenges</title>
+    <title>Steganography Week</title>
     <link rel="stylesheet" href="style.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&family=VT323&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=MedievalSharp&family=Cinzel:wght@400;700&family=IM+Fell+English:ital@0;1&family=VT323&display=swap" rel="stylesheet">
 </head>
 <body>
-    <div class="overlay"></div>
-    <div class="scanlines"></div>
-    
-    <main class="game-container">
-        <header>
-            <h1 class="glitch" data-text="Stegano Nightmares">Stegano Nightmares</h1>
-            <p class="subtitle">Can you uncover the hidden truths?</p>
+
+    <!-- Background layers -->
+    <div class="bg-image"></div>
+    <div class="bg-fog"></div>
+    <div class="bg-vignette"></div>
+
+    <!-- HUD Top bar -->
+    <nav class="hud-nav">
+        <div class="hud-left">
+            <span class="hud-emblem">⚔</span>
+            <span id="user-display" class="hud-username">Wanderer</span>
+        </div>
+        <div class="hud-right">
+            <button id="leaderboard-btn" class="hud-btn">📜 Scores</button>
+            <button id="auth-btn" class="hud-btn hud-btn-primary">⚗ Begin</button>
+        </div>
+    </nav>
+
+    <!-- Main content -->
+    <main class="world-container">
+
+        <!-- Hero / Title -->
+        <header class="hero-header">
+            <div class="title-wrapper">
+                <p class="title-eyebrow">~ An Investigation into the Hidden ~</p>
+                <h1 class="game-title">Steganography<br><span>Week</span></h1>
+                <p class="title-tagline">Four mysteries lie dormant within these files. <em>Will you uncover them?</em></p>
+            </div>
         </header>
 
-        <section class="menu-container">
-            <ul class="challenge-list" id="challenge-list">
-                <!-- Javascript will populate this -->
-            </ul>
-        </section>
-    </main>
+        <!-- Challenge quest board -->
+        <section class="quest-board" id="quest-section">
 
-    <div class="modal" id="challenge-modal">
-        <div class="modal-content">
-            <span class="close-btn" id="close-btn">&times;</span>
-            <h2 id="modal-title">Challenge Title</h2>
-            <div class="modal-body">
-                <p id="modal-desc">Description goes here</p>
-                <div class="modal-stats">
-                    <span id="modal-difficulty">Difficulty: ???</span>
-                    <span id="modal-points">Points: 0</span>
+            <!-- Login state -->
+            <div id="login-prompt" class="login-gate">
+                <div class="gate-panel">
+                    <span class="gate-icon">🔒</span>
+                    <h2>Access Restricted</h2>
+                    <p>The path ahead is sealed. Provide your Discord handle to enter the investigation.</p>
+                    <button class="rpg-btn" onclick="document.getElementById('auth-modal').classList.add('active')">Enter Your Name</button>
                 </div>
             </div>
-            <button class="action-btn">Commence</button>
+
+            <!-- Challenge cards (hidden until logged in) -->
+            <div id="challenge-grid" class="challenge-grid" style="display:none;">
+                <!-- populated by JS -->
+            </div>
+
+        </section>
+
+    </main>
+
+    <!-- ===== CHALLENGE MODAL ===== -->
+    <div class="modal-overlay" id="challenge-modal">
+        <div class="rpg-panel modal-panel">
+            <button class="modal-close" id="close-btn">&times;</button>
+            <div class="modal-scroll-top"></div>
+
+            <div class="modal-header">
+                <span id="modal-badge" class="diff-badge">Easy</span>
+                <h2 id="modal-title">Challenge</h2>
+                <p id="modal-pts-display" class="modal-pts">100 pts</p>
+            </div>
+
+            <div class="modal-lore">
+                <p id="modal-desc"></p>
+            </div>
+
+            <div class="modal-actions">
+                <a id="download-btn" class="rpg-btn rpg-btn-outline" href="#" style="display:none;">⬇ Download File</a>
+                <div id="submission-area" style="display:none;">
+                    <input type="text" id="flag-input" class="rpg-input" placeholder="flag{...}" />
+                    <button class="rpg-btn" id="submit-flag-btn">Submit</button>
+                    <p id="submission-msg" class="submit-msg"></p>
+                </div>
+                <div id="start-btn-wrap" style="display:none;">
+                    <button class="rpg-btn solved-btn" id="start-btn">Awaiting Identity</button>
+                </div>
+            </div>
+
+            <div class="modal-scroll-bot"></div>
         </div>
     </div>
 
-    <!-- Audio elements for ambient and interaction sounds - using dummy sources for now -->
+    <!-- ===== AUTH MODAL ===== -->
+    <div class="modal-overlay" id="auth-modal">
+        <div class="rpg-panel auth-panel">
+            <button class="modal-close" id="auth-close-btn">&times;</button>
+            <h2 class="auth-title">Who Dares Enter?</h2>
+            <p class="auth-sub">Provide your Discord username. A new tome will be opened in your name.</p>
+            <input type="text" id="auth-username" class="rpg-input" placeholder="discordhandle" />
+            <p id="auth-msg" class="submit-msg"></p>
+            <button class="rpg-btn" id="login-submit-btn">Proceed →</button>
+        </div>
+    </div>
+
+    <!-- ===== LEADERBOARD MODAL ===== -->
+    <div class="modal-overlay" id="lb-modal">
+        <div class="rpg-panel lb-panel">
+            <button class="modal-close" id="lb-close-btn">&times;</button>
+            <h2>Hall of Fame</h2>
+            <table id="leaderboard-table">
+                <thead>
+                    <tr><th>#</th><th>Investigator</th><th>Score</th></tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+    </div>
+
     <audio id="hover-sound" src="https://assets.mixkit.co/active_storage/sfx/2571/2571-preview.mp3" preload="auto"></audio>
     <audio id="click-sound" src="https://assets.mixkit.co/active_storage/sfx/2568/2568-preview.mp3" preload="auto"></audio>
 
