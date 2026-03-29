@@ -14,14 +14,12 @@ app.use(express.json());
 app.use('/challenges', express.static('challenges'));
 app.use(express.static('.'));
 
-// Initialize SQLite Database
 const db = new sqlite3.Database('./stegano.db', (err) => {
     if (err) {
         console.error('Error opening database', err.message);
     } else {
         console.log('Connected to the SQLite database.');
         
-        // Create tables if they don't exist
         db.run(`CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE,
@@ -40,7 +38,6 @@ const db = new sqlite3.Database('./stegano.db', (err) => {
     }
 });
 
-// Middleware to verify JWT token
 const authenticateToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
@@ -55,22 +52,19 @@ const authenticateToken = (req, res, next) => {
 };
 
 
-// --- AUTHENTICATION ROUTES ---
-
 app.post('/api/login', (req, res) => {
     const { username } = req.body;
     if (!username) return res.status(400).json({ error: 'Discord username required' });
     
-    // Find or create user
     db.get(`SELECT * FROM users WHERE username = ?`, [username], (err, user) => {
         if (err) return res.status(500).json({ error: 'Database error' });
         
         if (user) {
-            // User exists, log them in
+            
             const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '24h' });
             return res.json({ token, username: user.username });
         } else {
-            // New user, register them automatically
+            
             db.run(`INSERT INTO users (username) VALUES (?)`, [username], function(err) {
                 if (err) return res.status(500).json({ error: 'Error creating user' });
                 
@@ -83,7 +77,6 @@ app.post('/api/login', (req, res) => {
 });
 
 app.get('/api/me', authenticateToken, (req, res) => {
-    // Get solved challenges
     db.all(`SELECT challenge_id FROM solves WHERE user_id = ?`, [req.user.id], (err, rows) => {
         if (err) return res.status(500).json({ error: 'Database error' });
         const solvedIds = rows.map(row => row.challenge_id);
@@ -91,18 +84,16 @@ app.get('/api/me', authenticateToken, (req, res) => {
     });
 });
 
-// --- GAME ROUTES ---
 
-const FIRST_BLOOD_BONUS = 50; // Extra points for being first to solve
+const FIRST_BLOOD_BONUS = 50; 
 
 const challenges = [
-    { id: 1, flag: 'OMC{y4_y3ma_y4_y3ma_y4_Ad1l_y4_G0al}', basePoints: 100,  decrement: 8,  minPercent: 0.25 },
-    { id: 2, flag: 'flag{d4n53_m4c4b3_nuremberg}',           basePoints: 250,  decrement: 15, minPercent: 0.25 },
-    { id: 3, flag: 'OMC{c4tch_m3_1f_y0u_cAn}',              basePoints: 300,  decrement: 20, minPercent: 0.25 },
-    { id: 4, flag: 'OMC{you_are_victorious}',                 basePoints: 100,  decrement: 8,  minPercent: 0.25 }
+    { id: 1, flag: process.env.FLAG_1, basePoints: 100,  decrement: 8,  minPercent: 0.25 },
+    { id: 2, flag: process.env.FLAG_2, basePoints: 250,  decrement: 15, minPercent: 0.25 },
+    { id: 3, flag: process.env.FLAG_3, basePoints: 300,  decrement: 20, minPercent: 0.25 },
+    { id: 4, flag: process.env.FLAG_4, basePoints: 100,  decrement: 8,  minPercent: 0.25 }
 ];
 
-// Calculate current point value based on how many people already solved it
 function calcPoints(challenge, solveCount) {
     const minPoints = Math.floor(challenge.basePoints * challenge.minPercent);
     const current = challenge.basePoints - (solveCount * challenge.decrement);
@@ -163,7 +154,6 @@ app.get('/api/leaderboard', (req, res) => {
     });
 });
 
-// Expose current point values per challenge (live, based on solve count)
 app.get('/api/challenges', (req, res) => {
     db.all(`SELECT challenge_id, COUNT(*) as solveCount FROM solves GROUP BY challenge_id`, [], (err, rows) => {
         if (err) return res.status(500).json({ error: 'Database error' });
