@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const Database = require('better-sqlite3');
-const bcrypt = require('bcrypt');
+const { Pool } = require('pg');
 const jwt = require('jsonwebtoken');
 require('dotenv').config();
 
@@ -14,27 +14,59 @@ app.use(express.json());
 app.use('/challenges', express.static('challenges'));
 app.use(express.static('.'));
 
-// Initialize SQLite Database (better-sqlite3 is synchronous)
-const db = new Database('./stegano.db');
-db.pragma('journal_mode = WAL');
+// --- DATABASE ABSTRACTION ---
+let db;
+const isPostgres = !!process.env.DATABASE_URL;
 
-db.exec(`CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE,
-    score INTEGER DEFAULT 0
-)`);
+if (isPostgres) {
+    db = new Pool({
+        connectionString: process.env.DATABASE_URL,
+        ssl: { rejectUnauthorized: false }
+    });
+    console.log('Using PostgreSQL database.');
+} else {
+    db = new Database('./stegano.db');
+    db.pragma('journal_mode = WAL');
+    console.log('Using SQLite database.');
+}
 
-db.exec(`CREATE TABLE IF NOT EXISTS solves (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
-    challenge_id INTEGER,
-    points_awarded INTEGER DEFAULT 0,
-    first_blood INTEGER DEFAULT 0,
-    solved_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(user_id) REFERENCES users(id)
-)`);
+async function query(text, params) {
+    if (isPostgres) {
+        return await db.query(text, params);
+    } else {
+        // Convert $1, $2 to ? for SQLite
+        const sqliteText = text.replace(/\$\d+/g, '?');
+        const stmt = db.prepare(sqliteText);
+        if (text.trim().toUpperCase().startsWith('SELECT')) {
+            const rows = stmt.all(params || []);
+            return { rows };
+        } else {
+            const result = stmt.run(params || []);
+            return { rowCount: result.changes, lastId: result.lastInsertRowid };
+        }
+    }
+}
 
-console.log('Connected to the SQLite database.');
+// Initialize Tables
+async function initDB() {
+    await query(`CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        username TEXT UNIQUE,
+        score INTEGER DEFAULT 0
+    )`.replace('SERIAL PRIMARY KEY', isPostgres ? 'SERIAL PRIMARY KEY' : 'INTEGER PRIMARY KEY AUTOINCREMENT'));
+
+    await query(`CREATE TABLE IF NOT EXISTS solves (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER,
+        challenge_id INTEGER,
+        points_awarded INTEGER DEFAULT 0,
+        first_blood INTEGER DEFAULT 0,
+        solved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(user_id) REFERENCES users(id)
+    )`.replace('SERIAL PRIMARY KEY', isPostgres ? 'SERIAL PRIMARY KEY' : 'INTEGER PRIMARY KEY AUTOINCREMENT'));
+}
+
+initDB().catch(console.error);
 
 // Middleware to verify JWT token
 const authenticateToken = (req, res, next) => {
@@ -50,39 +82,42 @@ const authenticateToken = (req, res, next) => {
 
 // --- AUTHENTICATION ROUTES ---
 
-app.post('/api/login', (req, res) => {
+app.post('/api/login', async (req, res) => {
     const { username } = req.body;
     if (!username) return res.status(400).json({ error: 'Discord username required' });
 
     try {
-        let user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+        let result = await query('SELECT * FROM users WHERE username = $1', [username]);
+        let user = result.rows[0];
 
         if (user) {
-            const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '24h' });
+            const token = jwt.sign({ id: user.id || user.id, username: user.username }, JWT_SECRET, { expiresIn: '24h' });
             return res.json({ token, username: user.username });
         } else {
-            const result = db.prepare('INSERT INTO users (username) VALUES (?)').run(username);
-            const token = jwt.sign({ id: result.lastInsertRowid, username }, JWT_SECRET, { expiresIn: '24h' });
+            const insertResult = await query('INSERT INTO users (username) VALUES ($1)', [username]);
+            const newId = isPostgres 
+                ? (await query('SELECT id FROM users WHERE username = $1', [username])).rows[0].id
+                : insertResult.lastId;
+            const token = jwt.sign({ id: newId, username }, JWT_SECRET, { expiresIn: '24h' });
             return res.status(201).json({ token, username });
         }
     } catch (err) {
+        console.error(err);
         res.status(500).json({ error: 'Database error' });
     }
 });
 
-app.get('/api/me', authenticateToken, (req, res) => {
+app.get('/api/me', authenticateToken, async (req, res) => {
     try {
-        const rows = db.prepare('SELECT challenge_id FROM solves WHERE user_id = ?').all(req.user.id);
-        res.json({ username: req.user.username, solved: rows.map(r => r.challenge_id) });
+        const result = await query('SELECT challenge_id FROM solves WHERE user_id = $1', [req.user.id]);
+        res.json({ username: req.user.username, solved: result.rows.map(r => r.challenge_id) });
     } catch (err) {
         res.status(500).json({ error: 'Database error' });
     }
 });
 
 // --- GAME ROUTES ---
-
 const FIRST_BLOOD_BONUS = 50;
-
 const challenges = [
     { id: 1, flag: process.env.FLAG_1, basePoints: 100,  decrement: 8,  minPercent: 0.25 },
     { id: 2, flag: process.env.FLAG_2, basePoints: 250,  decrement: 15, minPercent: 0.25 },
@@ -95,22 +130,24 @@ function calcPoints(challenge, solveCount) {
     return Math.max(challenge.basePoints - (solveCount * challenge.decrement), minPoints);
 }
 
-app.post('/api/submit', authenticateToken, (req, res) => {
+app.post('/api/submit', authenticateToken, async (req, res) => {
     const { challengeId, flag } = req.body;
     const challenge = challenges.find(c => c.id === challengeId);
     if (!challenge) return res.status(404).json({ error: 'Challenge not found' });
     if (challenge.flag !== flag) return res.status(400).json({ error: 'Incorrect flag! Keep digging.', correct: false });
 
     try {
-        const existing = db.prepare('SELECT * FROM solves WHERE user_id = ? AND challenge_id = ?').get(req.user.id, challengeId);
-        if (existing) return res.status(400).json({ error: 'Already solved this case.', correct: true });
+        const existing = await query('SELECT * FROM solves WHERE user_id = $1 AND challenge_id = $2', [req.user.id, challengeId]);
+        if (existing.rows.length > 0) return res.status(400).json({ error: 'Already solved this case.', correct: true });
 
-        const { count: solveCount } = db.prepare('SELECT COUNT(*) as count FROM solves WHERE challenge_id = ?').get(challengeId);
+        const countResult = await query('SELECT COUNT(*) as count FROM solves WHERE challenge_id = $1', [challengeId]);
+        const solveCount = parseInt(countResult.rows[0].count);
         const isFirstBlood = solveCount === 0;
         const pointsEarned = calcPoints(challenge, solveCount) + (isFirstBlood ? FIRST_BLOOD_BONUS : 0);
 
-        db.prepare('INSERT INTO solves (user_id, challenge_id, points_awarded, first_blood) VALUES (?, ?, ?, ?)').run(req.user.id, challengeId, pointsEarned, isFirstBlood ? 1 : 0);
-        db.prepare('UPDATE users SET score = score + ? WHERE id = ?').run(pointsEarned, req.user.id);
+        await query('INSERT INTO solves (user_id, challenge_id, points_awarded, first_blood) VALUES ($1, $2, $3, $4)', 
+                    [req.user.id, challengeId, pointsEarned, isFirstBlood ? 1 : 0]);
+        await query('UPDATE users SET score = score + $1 WHERE id = $2', [pointsEarned, req.user.id]);
 
         res.json({
             message: isFirstBlood
@@ -121,24 +158,25 @@ app.post('/api/submit', authenticateToken, (req, res) => {
             firstBlood: isFirstBlood
         });
     } catch (err) {
+        console.error(err);
         res.status(500).json({ error: 'Database error' });
     }
 });
 
-app.get('/api/leaderboard', (req, res) => {
+app.get('/api/leaderboard', async (req, res) => {
     try {
-        const rows = db.prepare('SELECT username, score FROM users ORDER BY score DESC LIMIT 10').all();
-        res.json(rows);
+        const result = await query('SELECT username, score FROM users ORDER BY score DESC LIMIT 10');
+        res.json(result.rows);
     } catch (err) {
         res.status(500).json({ error: 'Database error' });
     }
 });
 
-app.get('/api/challenges', (req, res) => {
+app.get('/api/challenges', async (req, res) => {
     try {
-        const rows = db.prepare('SELECT challenge_id, COUNT(*) as solveCount FROM solves GROUP BY challenge_id').all();
+        const result = await query('SELECT challenge_id, COUNT(*) as solvecount FROM solves GROUP BY challenge_id');
         const solveCounts = {};
-        rows.forEach(r => { solveCounts[r.challenge_id] = r.solveCount; });
+        result.rows.forEach(r => { solveCounts[r.challenge_id] = parseInt(r.solvecount); });
 
         const info = challenges.map(c => ({
             id: c.id,
@@ -148,6 +186,7 @@ app.get('/api/challenges', (req, res) => {
         }));
         res.json(info);
     } catch (err) {
+        console.error(err);
         res.status(500).json({ error: 'Database error' });
     }
 });
